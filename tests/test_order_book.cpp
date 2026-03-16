@@ -20,7 +20,7 @@ void test_basic_order_submission() {
     assert(book.get_best_bid() == 10000);
     assert(book.get_total_buy_quantity() == 100);
     
-    std::cout << "✓ Basic order submission test passed" << std::endl;
+    std::cout << "Basic order submission test passed." << std::endl;
 }
 
 void test_order_matching() {
@@ -42,7 +42,7 @@ void test_order_matching() {
     // Should have matched
     assert(book.get_matched_orders() >= 1);
     
-    std::cout << "✓ Order matching test passed (matched: " 
+    std::cout << "Order matching test passed (matched: " 
               << book.get_matched_orders() << " orders)" << std::endl;
 }
 
@@ -62,7 +62,7 @@ void test_spread_calculation() {
     uint64_t spread = book.get_spread();
     assert(spread == 50);
     
-    std::cout << "✓ Spread calculation test passed (spread: " << spread << ")" << std::endl;
+    std::cout << "Spread calculation test passed (spread: " << spread << ")" << std::endl;
 }
 
 void test_concurrent_submission() {
@@ -105,7 +105,7 @@ void test_concurrent_submission() {
     
     assert(total_processed == NUM_THREADS * ORDERS_PER_THREAD);
     
-    std::cout << "✓ Concurrent submission test passed (processed: " 
+    std::cout << "Concurrent submission test passed (processed: " 
               << total_processed << " orders)" << std::endl;
     std::cout << "  Best Bid: " << book.get_best_bid() << std::endl;
     std::cout << "  Best Ask: " << book.get_best_ask() << std::endl;

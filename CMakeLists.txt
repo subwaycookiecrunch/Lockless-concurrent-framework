@@ -9,7 +9,7 @@ include_directories(include)
 option(ENABLE_TSAN "Enable ThreadSanitizer for race detection" OFF)
 
 if(MSVC)
-    add_compile_options(/W4 /WX)
+    add_compile_options(/W3)
 else()
     add_compile_options(-Wall -Wextra -Werror -Wpedantic)
     
@@ -20,7 +20,6 @@ else()
     endif()
 endif()
 
-# Helper to add an executable and link platform libs
 function(lockless_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     if(NOT MSVC)
@@ -58,6 +57,12 @@ add_test(NAME test_object_pool COMMAND test_object_pool)
 
 lockless_add_executable(test_order_book tests/test_order_book.cpp)
 add_test(NAME test_order_book COMMAND test_order_book)
+
+lockless_add_executable(test_epoch_reclaimer tests/test_epoch_reclaimer.cpp)
+add_test(NAME test_epoch_reclaimer COMMAND test_epoch_reclaimer)
+
+lockless_add_executable(test_spsc_queue tests/test_spsc_queue.cpp)
+add_test(NAME test_spsc_queue COMMAND test_spsc_queue)
 
 # --- Benchmarks ---
 

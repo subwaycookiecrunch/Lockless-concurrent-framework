@@ -28,7 +28,7 @@ void test_basic_recording() {
     assert(ops[1].type == lockless::OperationType::POP);
     assert(ops[1].success);
     
-    assert(validator.check_linearizability());
+    assert(validator.check_sequential_consistency());
     
     std::cout << "Basic recording test passed." << std::endl;
 }
@@ -56,7 +56,7 @@ void test_scoped_operation() {
     
     auto ops = validator.get_operations();
     assert(ops.size() == 2);
-    assert(validator.check_linearizability());
+    assert(validator.check_sequential_consistency());
     
     std::cout << "Scoped operation test passed." << std::endl;
 }
@@ -112,9 +112,9 @@ void test_concurrent_operations() {
     
     // Note: Due to timing precision and concurrent nature, strict linearizability  
     // checking may fail. In production, use TSan and more sophisticated validators.
-    bool is_linearizable = validator.check_linearizability();
-    if (!is_linearizable) {
-        std::cout << "Note: Some operations showed timing anomalies (expected in high concurrency)" << std::endl;
+    bool is_consistent = validator.check_sequential_consistency();
+    if (!is_consistent) {
+        std::cout << "Note: some operations had timing anomalies (expected under high concurrency)" << std::endl;
     }
     
     validator.print_statistics();

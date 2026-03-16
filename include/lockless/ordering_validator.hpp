@@ -117,13 +117,16 @@ public:
         return operations_;
     }
     
-    // Checks sequential consistency of PUSH/POP pairs by simulating all
-    // valid linearization orderings (brute-force for small histories).
-    // Falls back to a structural check for larger histories.
-    bool check_linearizability() const {
+    // checks that push/pop pairs are consistent:
+    // - every popped value was actually pushed
+    // - non-overlapping ops respect LIFO order
+    // NOTE: this is not a full linearizability check (that would require
+    // exploring all valid orderings which is NP-hard in the general case).
+    // this is more of a sanity check for sequential consistency.
+    bool check_sequential_consistency() const {
         std::lock_guard<std::mutex> lock(operations_mutex_);
         
-        // Sanity: no op should end before it started
+        // basic: no op should end before it started
         for (const auto& op : operations_) {
             if (op.end_time_ns < op.start_time_ns) {
                 std::cerr << "Violation: operation ended before it started" << std::endl;
@@ -131,9 +134,7 @@ public:
             }
         }
         
-        // Collect successful push/pop pairs and verify stack semantics:
-        // every popped value must have been pushed, and with LIFO ordering
-        // among non-overlapping operations.
+        // collect successful push/pop pairs
         std::vector<int64_t> pushed;
         std::vector<int64_t> popped;
         
@@ -146,7 +147,7 @@ public:
             }
         }
         
-        // Every popped value must exist in the pushed set
+        // every popped value must exist in the pushed set
         std::unordered_map<int64_t, int> push_counts;
         for (auto v : pushed) push_counts[v]++;
         
@@ -160,9 +161,8 @@ public:
             it->second--;
         }
 
-        // Check that non-overlapping push/pop pairs respect LIFO order.
-        // Sort completed ops by end time; for strictly sequential ops this
-        // must produce a valid stack trace.
+        // sort completed ops by end time and simulate — for strictly
+        // sequential ops this should produce a valid stack trace
         struct CompletedOp {
             OperationType type;
             int64_t value;
@@ -182,15 +182,11 @@ public:
                       return a.end_ns < b.end_ns;
                   });
         
-        // Simulate a stack with the linearized order
         std::stack<int64_t> sim;
         for (const auto& cop : sequential) {
             if (cop.type == OperationType::PUSH) {
                 sim.push(cop.value);
             } else {
-                // For concurrent ops the exact order isn't deterministic,
-                // so we only flag if the simulated stack is empty when it
-                // shouldn't be.
                 if (!sim.empty()) {
                     sim.pop();
                 }
@@ -263,7 +259,7 @@ private:
     std::atomic<uint64_t> operation_counter_{0};
 };
 
-// RAII helper for automatic operation recording
+// RAII helper for recording ops
 class ScopedOperation {
     OrderingValidator* validator_;
     uint64_t op_id_;

@@ -29,7 +29,7 @@ void test_basic_operations() {
 
 void test_concurrent_push_pop() {
     std::cout << "Testing Concurrent Push/Pop..." << std::endl;
-    constexpr int NUM_OPS = 1000;
+    constexpr int NUM_OPS = 100000;
     LockFreeStack<int> stack(NUM_OPS * 2 + 100); 
     std::atomic<int> sum{0};
     

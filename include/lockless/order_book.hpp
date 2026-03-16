@@ -50,11 +50,11 @@ public:
           total_buy_quantity_(0), total_sell_quantity_(0),
           matched_orders_(0) {}
     
-    bool submit_order(const Order& order) {
+    bool submit_order(const Order& order) noexcept {
         return order_queue_.try_push(order);
     }
     
-    uint64_t process_orders(size_t batch_size = 100) {
+    uint64_t process_orders(size_t batch_size = 100) noexcept {
         Order orders[100];
         size_t count = order_queue_.try_pop_batch(orders, std::min(batch_size, size_t(100)));
         
@@ -65,28 +65,28 @@ public:
         return count;
     }
     
-    uint64_t get_best_bid() const {
+    uint64_t get_best_bid() const noexcept {
         return best_bid_.load(std::memory_order_acquire);
     }
     
-    uint64_t get_best_ask() const {
+    uint64_t get_best_ask() const noexcept {
         uint64_t ask = best_ask_.load(std::memory_order_acquire);
         return ask == UINT64_MAX ? 0 : ask;
     }
     
-    uint64_t get_total_buy_quantity() const {
+    uint64_t get_total_buy_quantity() const noexcept {
         return total_buy_quantity_.load(std::memory_order_acquire);
     }
     
-    uint64_t get_total_sell_quantity() const {
+    uint64_t get_total_sell_quantity() const noexcept {
         return total_sell_quantity_.load(std::memory_order_acquire);
     }
     
-    uint64_t get_matched_orders() const {
+    uint64_t get_matched_orders() const noexcept {
         return matched_orders_.load(std::memory_order_acquire);
     }
     
-    uint64_t get_spread() const {
+    uint64_t get_spread() const noexcept {
         uint64_t bid = get_best_bid();
         uint64_t ask = get_best_ask();
         if (bid == 0 || ask == 0) return 0;
@@ -94,7 +94,7 @@ public:
     }
     
 private:
-    void process_single_order(const Order& order) {
+    void process_single_order(const Order& order) noexcept {
         if (order.side == Side::BUY) {
             uint64_t current_ask = best_ask_.load(std::memory_order_acquire);
             
@@ -108,6 +108,7 @@ private:
             } else {
                 total_buy_quantity_.fetch_add(order.quantity, std::memory_order_relaxed);
                 
+                // update best bid via CAS if this order improves it
                 uint64_t current_bid = best_bid_.load(std::memory_order_acquire);
                 while (order.price > current_bid) {
                     if (best_bid_.compare_exchange_weak(current_bid, order.price,

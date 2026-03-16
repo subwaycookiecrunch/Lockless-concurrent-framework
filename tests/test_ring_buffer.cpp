@@ -4,6 +4,8 @@
 #include <vector>
 #include <cassert>
 #include <atomic>
+#include <set>
+#include <mutex>
 
 void test_basic() {
     lockless::RingBuffer<int, 4> buffer;
@@ -27,35 +29,47 @@ void test_basic() {
 void test_concurrent() {
     constexpr size_t BUFFER_SIZE = 1024;
     constexpr int NUM_THREADS = 4;
-    constexpr int OPS_PER_THREAD = 100000;
+    constexpr int OPS_PER_THREAD = 1000000;
     
     lockless::RingBuffer<int, BUFFER_SIZE> buffer;
     std::atomic<int> push_count{0};
     std::atomic<int> pop_count{0};
 
-    auto producer = [&]() {
+    // track all popped values per consumer to verify nothing was lost
+    std::vector<std::vector<int>> per_thread_popped(NUM_THREADS);
+    std::mutex pop_mutex;
+
+    auto producer = [&](int id) {
         for (int i = 0; i < OPS_PER_THREAD; ++i) {
-            while (!buffer.try_push(i)) {
+            int val = id * OPS_PER_THREAD + i;
+            while (!buffer.try_push(val)) {
                 std::this_thread::yield();
             }
             push_count++;
         }
     };
 
-    auto consumer = [&]() {
+    auto consumer = [&](int consumer_id) {
         int val;
+        std::vector<int> local_popped;
+        local_popped.reserve(OPS_PER_THREAD);
+
         for (int i = 0; i < OPS_PER_THREAD; ++i) {
             while (!buffer.try_pop(val)) {
                 std::this_thread::yield();
             }
+            local_popped.push_back(val);
             pop_count++;
         }
+
+        std::lock_guard<std::mutex> lock(pop_mutex);
+        per_thread_popped[consumer_id] = std::move(local_popped);
     };
 
     std::vector<std::thread> threads;
     for (int i = 0; i < NUM_THREADS; ++i) {
-        threads.emplace_back(producer);
-        threads.emplace_back(consumer);
+        threads.emplace_back(producer, i);
+        threads.emplace_back(consumer, i);
     }
 
     for (auto& t : threads) {
@@ -65,7 +79,17 @@ void test_concurrent() {
     assert(push_count == NUM_THREADS * OPS_PER_THREAD);
     assert(pop_count == NUM_THREADS * OPS_PER_THREAD);
 
-    std::cout << "Concurrent test passed. Total ops: " << push_count + pop_count << std::endl;
+    // verify every pushed value was popped exactly once
+    std::set<int> all_popped;
+    for (auto& vec : per_thread_popped) {
+        for (int v : vec) {
+            auto [it, inserted] = all_popped.insert(v);
+            assert(inserted); // no duplicates
+        }
+    }
+    assert(static_cast<int>(all_popped.size()) == NUM_THREADS * OPS_PER_THREAD);
+
+    std::cout << "Concurrent test passed (" << push_count + pop_count << " total ops)." << std::endl;
 }
 
 int main() {
@@ -83,12 +107,9 @@ int main() {
         
         for(int i=0; i<5; ++i) if(output[i] != i+1) std::abort();
         
-        // Partial push
-        int input2[] = {6, 7, 8, 9, 10}; // Buffer size 8, currently empty.
-        // Fill it up
+        int input2[] = {6, 7, 8, 9, 10};
         if(buffer.try_push_batch(input2, 5) != 5) std::abort();
-        // Now 5 items in. 3 slots left.
-        if(buffer.try_push_batch(input2, 5) != 3) std::abort(); // Should push 3
+        if(buffer.try_push_batch(input2, 5) != 3) std::abort();
         
         std::cout << "Batch test passed." << std::endl;
     }

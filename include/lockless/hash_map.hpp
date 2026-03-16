@@ -42,29 +42,55 @@ public:
             
             bool expected = false;
             if (node.occupied.load(std::memory_order_acquire)) {
-                // Slot taken — if same key, it's a duplicate
+                if (node.ready.load(std::memory_order_acquire) && node.key == key) {
+                    return false; // duplicate
+                }
+                continue;
+            }
+            
+            // try to claim via CAS, then do a two-phase commit:
+            // write data first, then flip the ready flag so readers
+            // never see half-written data
+            if (node.occupied.compare_exchange_strong(expected, true,
+                    std::memory_order_acquire, std::memory_order_relaxed)) {
+                node.key = key;
+                node.value = value;
+                node.ready.store(true, std::memory_order_release);
+                return true;
+            }
+            // lost the race, keep probing
+        }
+        return false; // table full
+    }
+
+    bool insert(K&& key, V&& value) {
+        size_t hash = std::hash<K>{}(key);
+        size_t idx = hash % Size;
+
+        for (size_t i = 0; i < Size; ++i) {
+            size_t current_idx = (idx + i) % Size;
+            Node& node = buckets_[current_idx];
+            
+            bool expected = false;
+            if (node.occupied.load(std::memory_order_acquire)) {
                 if (node.ready.load(std::memory_order_acquire) && node.key == key) {
                     return false;
                 }
                 continue;
             }
             
-            // Try to claim slot via CAS
             if (node.occupied.compare_exchange_strong(expected, true,
                     std::memory_order_acquire, std::memory_order_relaxed)) {
-                // Two-phase insert: write data, then publish via ready flag.
-                // Readers spin briefly on !ready slots (obstruction-free).
-                node.key = key;
-                node.value = value;
+                node.key = std::move(key);
+                node.value = std::move(value);
                 node.ready.store(true, std::memory_order_release);
                 return true;
             }
-            // Lost the CAS race, keep probing
         }
-        return false; // table full
+        return false;
     }
 
-    bool find(const K& key, V& result) {
+    bool find(const K& key, V& result) noexcept {
         size_t hash = std::hash<K>{}(key);
         size_t idx = hash % Size;
 
@@ -76,7 +102,7 @@ public:
                 return false; // empty slot = end of probe chain
             }
             
-            // Slot claimed but data not yet visible — spin until ready
+            // slot claimed but data not written yet — spin til ready
             if (!node.ready.load(std::memory_order_acquire)) {
                 while (!node.ready.load(std::memory_order_acquire)) {
                     std::this_thread::yield();
