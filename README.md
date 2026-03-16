@@ -1,47 +1,27 @@
-# Lockless
+# lockless
 
 [![CI](https://github.com/subwaycookiecrunch/Lockless-concurrent-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/subwaycookiecrunch/Lockless-concurrent-framework/actions/workflows/ci.yml)
 
-Lock-free data structures for C++20. Started as a learning project to understand memory ordering and CAS loops, turned into something actually usable for low-latency work.
+bunch of lock-free data structures i wrote to actually understand memory ordering. started as me reading the Vyukov queue paper and going "ok let me just implement this myself" and then it kind of grew.
 
-The core idea: bounded MPMC ring buffer (Vyukov), a wait-free SPSC queue (Lamport), a Treiber-style stack with tagged-pointer ABA protection, and a simple insert-only hash map. On top of that there's a toy order book, epoch-based memory reclamation, cache-line utilities, and a basic correctness checker.
+not trying to replace tbb or folly or anything, i just wanted to know why `memory_order_acquire` matters and what false sharing actually does to your throughput numbers.
 
-Not trying to compete with Intel TBB or Folly — this is more of a from-scratch exercise to deeply understand why `memory_order_acquire` matters and how false sharing kills throughput. See [docs/design.md](docs/design.md) for the reasoning behind each design decision.
+see [docs/design.md](docs/design.md) for why i made specific choices.
 
-## What's in here
+## whats in here
 
-**Data structures**
-- `RingBuffer<T, Size>` — Bounded MPMC queue (Vyukov). Sequence-number based, power-of-2 sizes. Head and tail are padded to separate cache lines.
-- `SPSCQueue<T, Size>` — Wait-free single-producer single-consumer queue (Lamport). No CAS loops — every operation completes in bounded steps.
-- `ArrayLockFreeStack<T>` — Fixed-capacity lock-free stack. Uses 64-bit tagged index (32-bit tag + 32-bit index) to avoid 16-byte CAS on MSVC.
-- `LockFreeHashMap<K, V, Size>` — Open-addressing with linear probing. Insert-only (no delete). Two-phase commit via occupied/ready flags.
-- `ZeroCopyQueue` — Passes handles into a shared arena instead of copying data through the queue. Arena allocation uses a CAS loop to prevent overflow races.
+- `RingBuffer<T, Size>` - bounded mpmc queue based on Vyukov's design. sequence numbers, power of 2 sizes, head/tail on separate cache lines
+- `SPSCQueue<T, Size>` - wait-free single producer single consumer. no cas loops at all, just atomic loads and stores. use this if you have a dedicated producer/consumer pair
+- `ArrayLockFreeStack<T>` - lock-free stack, fixed capacity. packs tag + index into a uint64 to avoid 128-bit cas (which MSVC doesnt do lock-free anyway)
+- `LockFreeHashMap<K, V, Size>` - open addressing, insert-only. two-phase commit so readers never see half-written data
+- `ZeroCopyQueue` - passes arena offsets through the ring buffer instead of copying. the arena uses a cas loop so two threads cant both "succeed" past the size limit
+- `EpochReclaimer` + `EpochGuard` - epoch-based safe memory reclamation. basically you cant just free() a node that another thread might still be reading, this defers the free until its actually safe
+- `LockFreeObjectPool` - backed by the array stack, acquire/release interface
+- `OrderBook` - demo that ties everything together. not a real matching engine, just shows how the pieces fit
 
-**Progress guarantee comparison:**
+## building
 
-| Structure | Guarantee | Use Case |
-|-----------|-----------|----------|
-| `SPSCQueue` | Wait-free | Dedicated producer-consumer pairs |
-| `RingBuffer` | Lock-free | Multiple producers/consumers |
-| `ArrayLockFreeStack` | Lock-free | LIFO workloads |
-
-**Memory reclamation**
-- `EpochReclaimer` — Epoch-based safe memory reclamation (3-epoch scheme based on Fraser's approach). Threads register and enter/leave critical sections; retired objects are deferred until all threads have advanced past the retirement epoch.
-- `EpochGuard` — RAII wrapper for epoch critical sections.
-
-**Utilities**
-- `CacheAligned<T>` — Wrapper that forces 64-byte alignment to prevent false sharing.
-- `FalseSharingDetector` — Runtime check for cache-line proximity between atomics.
-- `OrderingValidator` — Records concurrent operations and checks sequential consistency of push/pop pairs.
-- `PerformanceMonitor` — RDTSC-based cycle counter with throughput reporting.
-
-**Applications**
-- `OrderBook` — Lock-free order submission via ring buffer, single-threaded matching engine. Tracks best bid/ask with atomic CAS loops.
-- `LockFreeObjectPool` — Acquire/release pool backed by the array stack.
-
-## Building
-
-Needs a C++20 compiler (tested on MSVC 19.x, GCC 12+, Clang 15+) and CMake 3.15+.
+need cmake 3.15+ and a c++20 compiler
 
 ```bash
 cmake -S . -B build
@@ -49,136 +29,56 @@ cmake --build build
 ctest --test-dir build
 ```
 
-For ThreadSanitizer (GCC/Clang only):
-```bash
-cmake -S . -B build_tsan -DENABLE_TSAN=ON
-cmake --build build_tsan
-```
+## numbers
 
-## Some numbers
+rough throughput on my machine, take with a grain of salt:
 
-Ring buffer on my machine (Ryzen 7, MSVC, Release):
+| thing | single thread | 4 threads |
+|-------|-------------|-----------|
+| ring buffer push+pop | ~34M ops/s | ~12M ops/s |
+| lock-free stack vs mutex | 2-3x faster under contention | scales better |
 
-| Scenario | Operations | Cycles/Op | Throughput |
-|----------|-----------|-----------|------------|
-| Single thread | 1M | ~59 | 34M ops/s |
-| 4 producers + 4 consumers | 800K | ~162 | 12M ops/s |
-| Batch (32-element chunks) | 640K | ~107 | 18M ops/s |
+run `python scripts/plot_benchmarks.py --build-dir build` after building if you want a chart of the scaling numbers.
 
-Order book: ~4000 orders from 4 threads, ~49% match rate, zero contention on the submission queue.
-
-The benchmarks also include contention-scaling tests (1/2/4/8 threads) and lock-free vs mutex comparisons. Run `python scripts/plot_benchmarks.py` after building to generate a scaling chart.
-
-These are rough — run the benchmarks yourself to get numbers for your hardware.
-
-## Usage
+## usage
 
 ```cpp
-#include "lockless/ring_buffer.hpp"
-
+// mpmc
 lockless::RingBuffer<int, 1024> buf;
-
 buf.try_push(42);
-
 int val;
-if (buf.try_pop(val)) {
-    // got 42
-}
-```
+buf.try_pop(val);
 
-```cpp
-// wait-free: use when you have exactly one producer and one consumer
-#include "lockless/spsc_queue.hpp"
-
+// wait-free spsc
 lockless::SPSCQueue<int, 1024> q;
-
 // producer thread
 q.try_push(42);
-
 // consumer thread
-int val;
-if (q.try_pop(val)) {
-    // got 42, guaranteed FIFO
-}
-```
+q.try_pop(val); // guaranteed FIFO
 
-```cpp
-#include "lockless/epoch_reclaimer.hpp"
-
+// epoch-based reclamation
 lockless::EpochReclaimer reclaimer;
 int tid = reclaimer.register_thread();
-
 {
     lockless::EpochGuard guard(reclaimer, tid);
-    // safe to read shared lock-free data here
-    auto* old_node = /* ... detach from data structure ... */;
-    reclaimer.retire(old_node); // freed later, once safe
+    auto* old_ptr = /* pop from some structure */;
+    reclaimer.retire(old_ptr); // freed later when safe
 }
 ```
 
-See `/examples` for more.
+## caveats
 
-## Project layout
+- stack's `is_lock_free()` returns false on some MSVC configs even though the algorithm doesnt use any locks. its a platform thing with how atomic<uint64_t> is implemented
+- hash map cant delete or resize. fine for my use case (unique order IDs) but thats a real limitation
+- the arena allocator throws when full instead of doing something smarter
+- order matching is super simplified, no partial fills, no price level queues
 
-```
-include/lockless/
-    common.hpp
-    ring_buffer.hpp
-    spsc_queue.hpp
-    array_stack.hpp
-    stack.hpp              (alias for ArrayLockFreeStack)
-    hash_map.hpp
-    message_queue.hpp
-    epoch_reclaimer.hpp
-    cache_utils.hpp
-    ordering_validator.hpp
-    performance_monitor.hpp
-    order_book.hpp
-    object_pool.hpp
-tests/
-    test_ring_buffer.cpp
-    test_spsc_queue.cpp
-    test_stack.cpp
-    test_array_stack.cpp
-    test_hash_map.cpp
-    test_message_queue.cpp
-    test_cache_utils.cpp
-    test_ordering_validator.cpp
-    test_order_book.cpp
-    test_object_pool.cpp
-    test_epoch_reclaimer.cpp
-benchmarks/
-    benchmark_ring_buffer.cpp
-    benchmark_stack.cpp
-    benchmark_order_book.cpp
-examples/
-    ring_buffer_example.cpp
-    order_book_example.cpp
-scripts/
-    plot_benchmarks.py
-docs/
-    design.md
-.github/workflows/
-    ci.yml
-CMakeLists.txt
-```
+## todo
 
-## Known issues
+- hash map deletion
+- hazard pointer implementation to compare with epoch-based
+- proper benchmarks with statistical rigor (google benchmark or similar)
 
-- The stack reports `is_lock_free() == false` on MSVC because `std::atomic<uint64_t>` uses a lock internally on some configs. It still works correctly, just not technically lock-free on that platform.
-- Hash map is insert-only — no deletion or resize. Fine for the order book use case (unique order IDs) but limited otherwise.
-- Order book matching is simplified: single-threaded processor, no partial fills, no price-level queues.
-- The zero-copy arena is a linear bump allocator that throws when full. Not suitable for long-running producers without manual reset.
-- Epoch reclaimer retire lists are protected by a simple CAS spinlock — works fine for moderate retire rates but could become a bottleneck under extreme contention.
-
-## TODO
-
-- Hash map deletion support (tombstone markers or Robin Hood hashing)
-- Multi-threaded matching with a sequencer pattern
-- Better arena allocator (ring of blocks instead of linear)
-- Hazard pointer implementation for comparison with epoch-based approach
-- Benchmark suite using Google Benchmark for statistical rigor
-
-## License
+## license
 
 MIT
